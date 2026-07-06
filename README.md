@@ -1,4 +1,4 @@
-# HIFI Music downloader from monochrome.tf
+# HIFI Music downloader module from monochrome.tf
 
 A python script based in the stack of monochrome.tf for downloading and streaming songs.Leaning in tidal/[HifiAPI](https://github.com/binimum/hifi-api) for metadata and id with audio sourcing from amazon music
 
