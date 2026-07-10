@@ -7,10 +7,10 @@ import time
 from pathlib import Path
 from mutagen.flac import FLAC,Picture
 import traceback
-
+from lyrics import obtenerLetra
+import asyncio
 API_AMZN = "https://amz.geeked.wtf/"
 API_TIDAL = "https://api.monochrome.tf"
-LYRICS_DEBUG = False
 LIBRARY_PATH = "musica/"
 
 def rutaCancion(cancion:dict) -> str:
@@ -29,10 +29,9 @@ def obtenerInfoCancion(id):
 
     f =requests.get(API_TIDAL+'/info/',params={'id':id})
     if(f.status_code==200):
-        info = json.loads(f.content)['data']
-        
+        info = f.json()['data']    
         return info
-
+    
 def amazon(cancion:dict,ruta:str) -> bool:
     with open("jwt.txt", "r", encoding="utf-8") as archivo:
         jwt = archivo.read()
@@ -63,9 +62,9 @@ def amazon(cancion:dict,ruta:str) -> bool:
         "artist":artistas,
         "quality":"UHD",
         },headers=headers)
-    if f.status_code == 401:
+    if f.status_code == 401 or f.status_code == 428:
         obtener_jwt()
-        time.sleep(2)
+        time.sleep(10)
         return amazon(cancion,ruta)
     
     if f.status_code != 200:
@@ -166,136 +165,6 @@ def mp4toflac(ruta):# extracts flac track from mp4 container
         print(f"\033[91m[!] Ha habido un error al usar ffmpeg!\033[00m \n {repr(e)}")
 
 
-def obtenerLetra(cancion,ruta):# tries to download lyrics from lrclib.net and internal monochrome.tf databases given a dict containing the track info given by tidalAPI/hifiAPI
-
-    try:
-        respuesta = requests.get("https://lrclib.net/api/get", params={
-        'track_name':cancion['title'],
-        'artist_name':cancion['artist']['name'],
-        'album_name':cancion['album']['title'],
-        'duration':cancion['duration']
-
-    }, timeout=30)
-        respuesta.raise_for_status()
-        datos = respuesta.json()
-        letra = datos.get('syncedLyrics') or datos.get('plainLyrics')
-        if letra:
-            with open(f"{ruta}.lrc", "w", encoding="utf-8") as f:
-                f.write(letra)
-            return
-
-    except Exception as e:
-        if LYRICS_DEBUG:
-            print(f"Error al obtener la letra de lrclib.net {repr(e)}")
-        else:
-            pass 
-
-    try: 
-        respuesta = requests.get("https://lyrics-api.binimum.org/", params={
-            'track': cancion['title'],
-            'artist': cancion['artist']['name'],
-            'album': cancion['album']['title'],
-            'duration': cancion['duration']
-        }, timeout=30)
-        respuesta.raise_for_status()
-        response_json = respuesta.json() 
-        resultados = response_json.get('results', [])
-        if resultados:
-            url_ttml = resultados[0].get('lyricsUrl')
-            if url_ttml:
-                ttml = requests.get(url_ttml, timeout=5)
-                if ttml.status_code == 200:
-                    lrc_data = convertir_ttml_a_lrc(ttml.text)
-                    if lrc_data:
-                        with open(f"{ruta}.lrc", "w", encoding="utf-8") as f:
-                            f.write(lrc_data)
-                        return
-                    
-    except Exception as e:
-        if LYRICS_DEBUG:
-            print(f"Error al obtener la letra de lyrics-api.binimum.org {repr(e)}")
-        else:
-            pass 
-    try: 
-        respuesta = requests.get("https://unison.boidu.dev/lyrics", params={
-            'song': cancion['title'],
-            'artist': cancion['artist']['name'],
-            'album': cancion['album']['title'],
-            'duration': cancion['duration']
-        }, timeout=30)
-        respuesta.raise_for_status()
-        datos = respuesta.json()
-        letra = datos.get('lrc') or datos.get('lyrics')
-        if letra:
-            with open(f"{ruta}.lrc", "w", encoding="utf-8") as f:
-                f.write(letra)
-            return
-        
-    except Exception as e:
-        if LYRICS_DEBUG:
-            print(f"Error al obtener la letra de unison.boidu.dev {repr(e)}")
-        else:
-            pass 
-
-    try:#                               Too many requests..?
-        respuesta = requests.get(f"https://lyrist.vercel.app/api/{cancion['title']}/{cancion['artist']['name']}", timeout=5)
-        respuesta.raise_for_status()
-        datos = respuesta.json()
-        letra_plana = datos.get('lyrics')
-        if letra_plana:
-            with open(f"{ruta}.lrc", "w", encoding="utf-8") as f:
-                f.write(f"[00:00.00]{cancion['title']}\n[00:05.00]\n" + letra_plana)
-            return
-        
-    except Exception as e:
-        if LYRICS_DEBUG:
-            print(f"Error al obtener la letra de lyrist.vercel.app {repr(e)}")
-        else:
-            pass 
-
-    print(f"[\033[93m!\033[00m] No se encontró la letra para: {cancion['title']}")
-
-
-def convertir_ttml_a_lrc(ttml_texto):# convert ttml synced lyrics to lrc synced lyrics
-    lrc_lineas = []
-    patron_p = r'<p[^>]*begin="([^"]+)"[^>]*>(.*?)</p>'
-    
-    for tiempo_str, bloque_texto in re.findall(patron_p, ttml_texto, re.DOTALL | re.IGNORECASE):
-        
-        texto_limpio = re.sub(r'<[^>]+>', '', bloque_texto)
-        texto_limpio = " ".join(texto_limpio.split()).strip()
-        
-        if not texto_limpio:
-            continue 
-            
-        try:
-            # 2. Lógica de tiempo universal
-            partes = tiempo_str.split(':')
-            
-            if len(partes) == 3:
-                # Caso 1: Viene con horas (HH:MM:SS.xxx) 
-                horas = int(partes[0])
-                minutos = int(partes[1])
-                segundos = float(partes[2])
-                minutos += horas * 60 
-                
-            elif len(partes) == 2:
-                # Caso 2: Viene con minutos (MM:SS.xxx) 
-                minutos = int(partes[0])
-                segundos = float(partes[1])
-                
-            else:
-                # Caso 3: Solo segundos (SS.xxx) 
-                minutos, segundos = divmod(float(tiempo_str), 60)
-                
-            #  [MM:SS.xx]
-            tiempo_lrc = f"[{int(minutos):02d}:{segundos:05.2f}]"
-            lrc_lineas.append(f"{tiempo_lrc} {texto_limpio}")
-            
-        except ValueError:
-            continue 
-            
-    return "\n".join(lrc_lineas)
 def append_metadata(info,path):# appends metadata to .flac file given info in the format of the TidalAPI/HifiAPI
     audio = FLAC(path)
 
@@ -353,16 +222,38 @@ def obtener_jwt():#obtains a new jwt token from monochrome.tf to use its amazon 
     print("[\033[92m✓\033[00m] ¡Nuevo JWT obtenido y guardado!")
     
     return
+def tidalSearchTrack(title:str,artist:str=None,album:str=None):
+    params = {}
+    if title:
+        params['s'] = title
+    if artist:
+        params['a'] = artist    
+    if album: 
+        params["al"] = album     
+
+    respuesta = requests.get(f"{API_TIDAL}/search/",params=params)
+    respuesta.raise_for_status()
+    return respuesta.json()['data']['items'][0] # la mas probable de coincidir [0]
 
 # Pre: cancion=SONG ID FROM TIDAL       ;   ruta=absolute or relative path to save audio file and lyrics file if possible. provide path without extension and without dot Ej: "Ed Sheeran/Shape of you"
 # Post:
 # <ruta>.flac music file downloaded from amazon music servers at maximum quality or from deezer with questionable audio quality as a fallback  
 # <ruta>.lrc LRC synced lyrics file from lrclib.net or from internal monochrome.tf databases
-def descargarCancion(cancion,ruta):
+
+
+
+async def descargarCancion(title:str,artist:str,album:str=None,ruta:str=None):
     try:
         Tstart = time.perf_counter()
+        cancion = tidalSearchTrack(title,artist,album)
+
+        if not ruta:
+            ruta=rutaCancion(cancion)
+
+        if not album:
+            album=cancion['album']['title']
         Path(ruta).parent.mkdir(parents=True, exist_ok=True)
-        cancion = obtenerInfoCancion(cancion['id'])
+
         ok = amazon(cancion,ruta)
         if not ok:
             deezer_fallback(cancion,ruta) 
@@ -370,8 +261,8 @@ def descargarCancion(cancion,ruta):
             obtenerLetra(cancion,ruta)
 
             return
-        append_metadata(cancion,f"{ruta}.flac")
-        obtenerLetra(cancion,ruta)
+        asyncio.run(append_metadata(cancion,f"{ruta}.flac"))
+        asyncio.run(obtenerLetra(cancion,ruta))
 
         size=round(Path(f"{ruta}.flac").stat().st_size/1048576,2)
         Tstop = time.perf_counter()
@@ -385,16 +276,17 @@ def descargarCancion(cancion,ruta):
 
 
 
-if __name__ == "__main__":
-    p = sync_playwright().start()
-    puerto_oculto = random.randint(30000, 60000)
-    contexto_global = p.chromium.launch_persistent_context(
-        user_data_dir="./mi_perfil",
-        channel="chrome", 
-        headless=False,
-        args=[f"--remote-debugging-port={puerto_oculto}","--disable-blink-features=AutomationControlled"]
-    )
-    pestana_activa = contexto_global.new_page()
+
+
+p = sync_playwright().start()
+puerto_oculto = random.randint(30000, 60000)
+contexto_global = p.chromium.launch_persistent_context(
+    user_data_dir="./mi_perfil",
+    channel="chrome", 
+    headless=False,
+    args=[f"--remote-debugging-port={puerto_oculto}","--disable-blink-features=AutomationControlled"]
+)
+pestana_activa = contexto_global.new_page()
 
 
 
